@@ -1,24 +1,33 @@
 # Copyright (c) 2025 Eliud García. Todos los derechos reservados.
 from watchdog.observers import Observer
 from agents.agent import Agent
+from agents.agent import move_to_quarantine
 from queen.queen import Queen
 import time
 from rich.console import Console
 from rich.table import Table
-
-
-def mostrar_menu():
-    print("\n[1] Generar reporte PDF")
-    print("[2] Salir")
-    return input("Elige una opción: ")
-def generar_reporte(db, filename="reporte.txt"):
-    with open(filename, "w", encoding="utf-8") as f:
-        for item in db.all():
-            f.write(f"{item.get('datetime', '')} - {item['agent']} - {item['file']}\n")
-    print(f"Reporte guardado en {filename}")
-
+import sys
 from fpdf import FPDF
-# ...existing code...
+import glob
+import os
+SUSPICIOUS_EXTENSIONS = ['.exe', '.bat', '.js', '.vbs', '.scr', '.cmd']
+def mostrar_menu():
+    console = Console()
+    console.print("\n[bold blue][1][/bold blue] [yellow]Escaneo manual[/yellow]")
+    console.print("[bold blue][2][/bold blue] [green]Generar reporte PDF[/green]")
+    console.print("[bold blue][0][/bold blue] [red]Salir[/red]")
+    return input("Elige una opción: ")
+
+def escaneo_manual(path, queen, agent_name="EscaneoManual"):
+    for filepath in glob.glob(f"{path}/**", recursive=True):
+        if os.path.isfile(filepath):
+            _, ext = os.path.splitext(filepath)
+            if ext.lower() in SUSPICIOUS_EXTENSIONS:
+                print(f"[ESCANEO] Archivo sospechoso: {filepath}")
+                move_to_quarantine(filepath)  # Mueve a cuarentena
+            queen.report(agent_name, filepath)
+    print("[ESCANEO] Escaneo manual finalizado.")
+
 
 def generar_reporte_pdf(db, filename="reporte.pdf"):
     pdf = FPDF()
@@ -31,14 +40,17 @@ def generar_reporte_pdf(db, filename="reporte.pdf"):
         pdf.cell(0, 10, txt=linea, ln=True)
     pdf.output(filename)
     print(f"Reporte PDF guardado en {filename}")
+
+
+
 def mostrar_miel(db):
     console = Console()
-    table = Table(title="Miel de la Colmena")
-    table.add_column("Agente")
-    table.add_column("Archivo detectado")
-    table.add_column("Fecha y hora")
+    table = Table(title="[bold yellow]Miel de la Colmena[/bold yellow]")
+    table.add_column("Agente", style="cyan", justify="center")
+    table.add_column("Archivo detectado", style="magenta")
+    table.add_column("Fecha y hora", style="green")
     for item in db.all():
-        table.add_row(item['agent'], item['file'],item.get('datetime', ''))
+        table.add_row(item['agent'], item['file'], item.get('datetime', ''))
     console.print(table)
 
 queen = Queen()
@@ -59,22 +71,27 @@ last_count = 0  # Guarda el número de registros previos
 # Mostrar la tabla una vez al inicio
 mostrar_miel(queen.hive)
 
+
 try:
     while True:
-        time.sleep(1)  # Checa cada segundo
+        import time
+        time.sleep(1)
         current_count = len(queen.hive)
         if current_count != last_count:
             mostrar_miel(queen.hive)
             last_count = current_count
-        
-          # Mostrar menú después de la tabla
-        opcion = mostrar_menu()
-        if opcion == "1":
-            generar_reporte_pdf(queen.hive)
-        elif opcion == "2":
-            break
+
+        comando = input("Escribe 'menu' para ver opciones o ENTER para continuar: ").strip().lower()
+        if comando == "menu":
+            opcion = mostrar_menu()
+            if opcion == "1":
+                escaneo_manual("tests/files", queen)
+            elif opcion == "2":
+                generar_reporte_pdf(queen.hive)
+            elif opcion == "0":
+                observer.stop()
+                observer.join()
+                sys.exit()
 except KeyboardInterrupt:
     observer.stop()
 observer.join()
-# Al final de tu main.py, antes de observer.join()
-generar_reporte(queen.hive)
