@@ -1,5 +1,6 @@
 # Copyright (c) 2025 Eliud García. Todos los derechos reservados.
 from watchdog.observers import Observer
+from plyer import notification
 from agents.agent import Agent
 from agents.agent import move_to_quarantine
 from queen.queen import Queen
@@ -11,6 +12,13 @@ from fpdf import FPDF
 import glob
 import os
 SUSPICIOUS_EXTENSIONS = ['.exe', '.bat', '.js', '.vbs', '.scr', '.cmd']
+
+def notificar(titulo, mensaje):
+    notification.notify(
+        title=titulo,
+        message=mensaje,
+        timeout=5
+    )
 def mostrar_menu():
     console = Console()
     console.print("\n[bold blue][1][/bold blue] [yellow]Escaneo manual[/yellow]")
@@ -49,14 +57,20 @@ def mostrar_miel(db):
     table.add_column("Agente", style="cyan", justify="center")
     table.add_column("Archivo detectado", style="magenta")
     table.add_column("Fecha y hora", style="green")
+    
     for item in db.all():
-        table.add_row(item['agent'], item['file'], item.get('datetime', ''))
+        table.add_row(
+            item.get('agent', ''),
+            item.get('file', ''),       # si no hay archivo, muestra vacío
+            item.get('datetime', '')     # si no hay fecha, muestra vacío
+        )
     console.print(table)
 
 queen = Queen()
-agent1 = Agent("Abeja1", queen)
-agent2 = Agent("Abeja2", queen)
-agent3 = Agent("Abeja3", queen)
+agent1 = queen.create_agent("Abeja1")
+agent2 = queen.create_agent("Abeja2")
+agent3 = queen.create_agent("Abeja3")
+
 
 observer = Observer()
 observer.schedule(agent1, path="tests/files", recursive=True)
