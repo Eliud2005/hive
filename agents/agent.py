@@ -17,11 +17,12 @@ def move_to_quarantine(filepath):
     print(f"[CUARENTENA] Archivo movido a: {destino}")
 
 class Agent(FileSystemEventHandler):
-    def __init__(self, name, queen, signature):
+    def __init__(self, name, queen, signature, data):
         super().__init__()
         self.name = name
         self.queen = queen
         self.signature = signature
+        self.data = data  # Datos firmados por la Reina
 
     def on_created(self, event):
         if not event.is_directory:
@@ -30,13 +31,13 @@ class Agent(FileSystemEventHandler):
                 print(f"[ALERTA] {self.name} detectó archivo sospechoso creado: {event.src_path}")
                 move_to_quarantine(event.src_path)
             print(f"{self.name} detectó creación de {event.src_path}")
-            self.queen.report(self.name, event.src_path, self.signature)
+            self.queen.report(self.name, event.src_path, self.signature, self.data)
 
     def on_modified(self, event):
         if not event.is_directory:
             _, ext = os.path.splitext(event.src_path)
             if ext.lower() in SUSPICIOUS_EXTENSIONS:
-                print(f"[ALERTA] {self.name} detectó archivo sospechoso: {event.src_path}")
+                print(f"[ALERTA] {self.name} detectó archivo sospechoso modificado: {event.src_path}")
                 move_to_quarantine(event.src_path)
             print(f"{self.name} detectó cambio en {event.src_path}")
-            self.queen.report(self.name, event.src_path, self.signature)
+            self.queen.report(self.name, event.src_path, self.signature, self.data)
