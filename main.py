@@ -44,7 +44,7 @@ def generar_reporte_pdf(db, filename="reporte.pdf"):
     pdf.cell(200, 10, txt="Reporte de la Colmena", ln=True, align="C")
     pdf.ln(10)
     for item in db.all():
-        linea = f"{item.get('datetime', '')} - {item['agent']} - {item['file']}"
+        linea = f"{item.get('datetime', '')} - {item['agent']} - {item.get('file', '')}"
         pdf.cell(0, 10, txt=linea, ln=True)
     pdf.output(filename)
     print(f"Reporte PDF guardado en {filename}")
