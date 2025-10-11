@@ -32,6 +32,8 @@ class Agent(FileSystemEventHandler):
                 move_to_quarantine(event.src_path)
             print(f"{self.name} detectó creación de {event.src_path}")
             self.queen.report(self.name, event.src_path, self.signature, self.data)
+            
+
 
     def on_modified(self, event):
         if not event.is_directory:
@@ -41,3 +43,7 @@ class Agent(FileSystemEventHandler):
                 move_to_quarantine(event.src_path)
             print(f"{self.name} detectó cambio en {event.src_path}")
             self.queen.report(self.name, event.src_path, self.signature, self.data)
+
+
+
+
