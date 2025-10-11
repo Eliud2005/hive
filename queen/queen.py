@@ -44,21 +44,27 @@ class Queen:
         except InvalidSignature:
             return False
 
-    def report(self, agent, file, signature, data):
-        if not self.verify_agent(agent, signature, data):
-            print(f"[ALERTA] Reporte rechazado de {agent} — firma inválida.")
-            return
+def report(self, agent, file, signature, data):
+    if not self.verify_agent(agent, signature, data):
+        print(f"[ALERTA] Reporte rechazado de {agent} — firma inválida.")
+        return
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if file not in self.reports_buffer:
-            self.reports_buffer[file] = set()
-        self.reports_buffer[file].add(agent)
+    # 🔹 No reportar si no hay archivo
+    if not file:
+        return
 
-        agents_involved = ', '.join(sorted(self.reports_buffer[file]))
-        print(f"\n🧩 Archivo modificado: {file}\n   → Reportado por: {agents_involved}\n")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if file not in self.reports_buffer:
+        self.reports_buffer[file] = set()
+    self.reports_buffer[file].add(agent)
 
-        if not self.hive.contains((self.query.agent == agent) & (self.query.file == file)):
-            self.hive.insert({'agent': agent, 'file': file, 'datetime': now})
+    agents_involved = ', '.join(sorted(self.reports_buffer[file]))
+    print(f"\n🧩 Archivo modificado: {file}\n   → Reportado por: {agents_involved}\n")
+
+    # 🔹 Insertar solo si no existe
+    if not self.hive.contains((self.query.agent == agent) & (self.query.file == file)):
+        self.hive.insert({'agent': agent, 'file': file, 'datetime': now})
+
 
     def generate_pdf_report(self, filename="Hive_Report.pdf", logo_path="public/assets/bee7.png"):
         # Ruta absoluta para evitar permisos

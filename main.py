@@ -95,13 +95,16 @@ def mostrar_miel(db):
     table.add_column("Archivo detectado", style="magenta")
     table.add_column("Fecha y hora", style="green")
     
+    # Solo mostrar registros con archivo
     for item in db.all():
-        table.add_row(
-            item.get('agent', ''),
-            item.get('file', ''),
-            item.get('datetime', '')
-        )
+        if 'file' in item and item['file']:
+            table.add_row(
+                item.get('agent', ''),
+                item.get('file', ''),
+                item.get('datetime', '')
+            )
     console.print(table)
+
 
 # ---------------- Inicialización ----------------
 queen = Queen()
