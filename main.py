@@ -32,14 +32,20 @@ def mostrar_menu():
 
 # ---------------- Escaneo manual ----------------
 def escaneo_manual(path, queen, agent_name="EscaneoManual"):
+    # Crear un agente temporal solo para este escaneo
+    temp_agent = queen.create_agent(agent_name)
+    
     for filepath in glob.glob(f"{path}/**", recursive=True):
         if os.path.isfile(filepath):
             _, ext = os.path.splitext(filepath)
             if ext.lower() in SUSPICIOUS_EXTENSIONS:
                 print(f"[ESCANEO] Archivo sospechoso: {filepath}")
                 move_to_quarantine(filepath)
-            queen.report(agent_name, filepath)
+            
+            # Usar la firma y datos del agente
+            queen.report(agent_name, filepath, temp_agent.signature, temp_agent.data)
     print("[ESCANEO] Escaneo manual finalizado.")
+
 
 # ---------------- Generar reporte PDF ----------------
 def generar_reporte_pdf(db, filename=None, logo_path=None):
