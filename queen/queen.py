@@ -1,3 +1,4 @@
+# queen/queen.py
 from tinydb import TinyDB, Query
 from datetime import datetime
 from cryptography.hazmat.primitives.asymmetric import dsa
@@ -6,14 +7,19 @@ from cryptography.exceptions import InvalidSignature
 from agents.agent import Agent
 from fpdf import FPDF
 import os
+import threading
 
 class Queen:
+    DEBOUNCE_DELAY = 0.3  # Consolidar eventos
+
     def __init__(self):
         self.hive = TinyDB('hive.json')
         self.query = Query()
         self.private_key = dsa.generate_private_key(key_size=2048)
         self.public_key = self.private_key.public_key()
-        self.reports_buffer = {}
+        self.reports_buffer = {}  # file → set(agentes)
+        self._lock = threading.Lock()
+        self._debounce_timers = {}  # file → timer
 
     def _generate_signature(self, name):
         data = f"{name}-{datetime.now().timestamp()}".encode()
@@ -44,44 +50,53 @@ class Queen:
         except InvalidSignature:
             return False
 
+    def _debounced_report(self, file):
+        with self._lock:
+            agents_involved = ', '.join(sorted(self.reports_buffer[file]))
+            print(f"\n🧩 Archivo modificado: {file}\n   → Reportado por: {agents_involved}\n")
+
+            # Insertar en DB si no existe
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for agent in self.reports_buffer[file]:
+                if not self.hive.contains((self.query.agent == agent) & (self.query.file == file)):
+                    self.hive.insert({'agent': agent, 'file': file, 'datetime': now})
+
+            # Limpiar buffer para este archivo
+            del self._debounce_timers[file]
+            self.reports_buffer[file].clear()
+
     def report(self, agent, file, signature, data):
         if not self.verify_agent(agent, signature, data):
             print(f"[ALERTA] Reporte rechazado de {agent} — firma inválida.")
             return
 
-        # 🔹 No reportar si no hay archivo
         if not file:
             return
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if file not in self.reports_buffer:
-            self.reports_buffer[file] = set()
-        self.reports_buffer[file].add(agent)
+        with self._lock:
+            if file not in self.reports_buffer:
+                self.reports_buffer[file] = set()
+            self.reports_buffer[file].add(agent)
 
-        agents_involved = ', '.join(sorted(self.reports_buffer[file]))
-        print(f"\n🧩 Archivo modificado: {file}\n   → Reportado por: {agents_involved}\n")
-
-        # 🔹 Insertar solo si no existe
-        if not self.hive.contains((self.query.agent == agent) & (self.query.file == file)):
-            self.hive.insert({'agent': agent, 'file': file, 'datetime': now})
+            # Reiniciar timer de debounce
+            if file in self._debounce_timers:
+                self._debounce_timers[file].cancel()
+            timer = threading.Timer(self.DEBOUNCE_DELAY, self._debounced_report, args=[file])
+            self._debounce_timers[file] = timer
+            timer.start()
 
     def generate_pdf_report(self, filename="Hive_Report.pdf", logo_path="public/assets/bee7.png"):
-        # Ruta absoluta para evitar problemas de permisos
         filename_abs = os.path.abspath(filename)
-
         pdf = FPDF()
         pdf.add_page()
 
-        # 🔹 Logo
         if logo_path and os.path.exists(logo_path):
             pdf.image(logo_path, x=10, y=8, w=30)
 
-        # 🔹 Encabezado
         pdf.set_font("Helvetica", "B", 16)
         pdf.cell(0, 15, "Reporte de la Colmena - BeeCode", ln=True, align="C")
         pdf.ln(10)
 
-        # 🔹 Encabezado tabla
         pdf.set_font("Helvetica", "B", 12)
         pdf.set_fill_color(200, 220, 255)
         pdf.cell(60, 10, "Archivo", border=1, align="C", fill=True)
@@ -89,7 +104,6 @@ class Queen:
         pdf.cell(50, 10, "Fecha y hora", border=1, align="C", fill=True)
         pdf.ln()
 
-        # 🔹 Filas alternadas
         pdf.set_font("Helvetica", "", 12)
         fill = False
         for file, agents in self.reports_buffer.items():

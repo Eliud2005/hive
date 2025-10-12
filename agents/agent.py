@@ -1,6 +1,9 @@
+# agents/agent.py
 from watchdog.events import FileSystemEventHandler
 import os
 import shutil
+import threading
+import time
 
 SUSPICIOUS_EXTENSIONS = ['.exe', '.bat', '.js', '.vbs', '.scr', '.cmd']
 QUARANTINE_FOLDER = "quarantine"
@@ -17,33 +20,46 @@ def move_to_quarantine(filepath):
     print(f"[CUARENTENA] Archivo movido a: {destino}")
 
 class Agent(FileSystemEventHandler):
+    DEBOUNCE_INTERVAL = 0.5  # segundos
+
     def __init__(self, name, queen, signature, data):
         super().__init__()
         self.name = name
         self.queen = queen
         self.signature = signature
         self.data = data  # Datos firmados por la Reina
+        self._recent_events = {}  # archivo → timestamp
+
+    def _should_process(self, filepath):
+        now = time.time()
+        last = self._recent_events.get(filepath, 0)
+        if now - last < self.DEBOUNCE_INTERVAL:
+            return False
+        self._recent_events[filepath] = now
+        return True
 
     def on_created(self, event):
-        if not event.is_directory:
-            _, ext = os.path.splitext(event.src_path)
-            if ext.lower() in SUSPICIOUS_EXTENSIONS:
-                print(f"[ALERTA] {self.name} detectó archivo sospechoso creado: {event.src_path}")
-                move_to_quarantine(event.src_path)
-            print(f"{self.name} detectó creación de {event.src_path}")
-            self.queen.report(self.name, event.src_path, self.signature, self.data)
-            
+        if event.is_directory:
+            return
+        if not self._should_process(event.src_path):
+            return
 
+        _, ext = os.path.splitext(event.src_path)
+        if ext.lower() in SUSPICIOUS_EXTENSIONS:
+            print(f"[ALERTA] {self.name} detectó archivo sospechoso creado: {event.src_path}")
+            move_to_quarantine(event.src_path)
+
+        self.queen.report(self.name, event.src_path, self.signature, self.data)
 
     def on_modified(self, event):
-        if not event.is_directory:
-            _, ext = os.path.splitext(event.src_path)
-            if ext.lower() in SUSPICIOUS_EXTENSIONS:
-                print(f"[ALERTA] {self.name} detectó archivo sospechoso modificado: {event.src_path}")
-                move_to_quarantine(event.src_path)
-            print(f"{self.name} detectó cambio en {event.src_path}")
-            self.queen.report(self.name, event.src_path, self.signature, self.data)
+        if event.is_directory:
+            return
+        if not self._should_process(event.src_path):
+            return
 
+        _, ext = os.path.splitext(event.src_path)
+        if ext.lower() in SUSPICIOUS_EXTENSIONS:
+            print(f"[ALERTA] {self.name} detectó archivo sospechoso modificado: {event.src_path}")
+            move_to_quarantine(event.src_path)
 
-
-
+        self.queen.report(self.name, event.src_path, self.signature, self.data)

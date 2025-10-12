@@ -111,11 +111,13 @@ queen = Queen()
 agent1 = queen.create_agent("Abeja1")
 agent2 = queen.create_agent("Abeja2")
 agent3 = queen.create_agent("Abeja3")
+agent4 = queen.create_agent("Abeja4")
 
 observer = Observer()
 observer.schedule(agent1, path="tests/files", recursive=True)
 observer.schedule(agent2, path="tests/files", recursive=True)
 observer.schedule(agent3, path="tests/files", recursive=True)
+observer.schedule(agent4, path="tests/files", recursive=True)
 observer.start()
 
 last_count = 0  # Número de registros previos
