@@ -22,12 +22,13 @@ def move_to_quarantine(filepath):
 class Agent(FileSystemEventHandler):
     DEBOUNCE_INTERVAL = 0.5  # segundos
 
-    def __init__(self, name, queen, signature, data):
+    def __init__(self, name, queen, signature=None, data=None, private_key=None):
         super().__init__()
         self.name = name
         self.queen = queen
         self.signature = signature
-        self.data = data  # Datos firmados por la Reina
+        self.data = data
+        self.private_key = private_key
         self._recent_events = {}  # archivo → timestamp
 
     def _should_process(self, filepath):
@@ -38,28 +39,36 @@ class Agent(FileSystemEventHandler):
         self._recent_events[filepath] = now
         return True
 
+    def _evaluate_risk(self, filepath):
+        """
+        Método que puede sobreescribirse en agentes con IA.
+        Retorna un valor entre 0 y 1 (riesgo).
+        Por defecto, detección simple por extensión.
+        """
+        _, ext = os.path.splitext(filepath)
+        return 1.0 if ext.lower() in SUSPICIOUS_EXTENSIONS else 0.0
+
+    def _sign(self, message_bytes):
+        if not self.private_key:
+            return None
+        from cryptography.hazmat.primitives import hashes
+        return self.private_key.sign(message_bytes, hashes.SHA256())
+
+    def _process_file(self, filepath):
+        riesgo = self._evaluate_risk(filepath)
+        if riesgo > 0.85:
+            move_to_quarantine(filepath)
+        timestamp = str(int(time.time()))
+        message = f"{filepath}|{timestamp}".encode("utf-8")
+        signature = self._sign(message)
+        self.queen.report(self.name, filepath, signature, self.data, signed_message=message)
+
     def on_created(self, event):
-        if event.is_directory:
+        if event.is_directory or not self._should_process(event.src_path):
             return
-        if not self._should_process(event.src_path):
-            return
-
-        _, ext = os.path.splitext(event.src_path)
-        if ext.lower() in SUSPICIOUS_EXTENSIONS:
-            print(f"[ALERTA] {self.name} detectó archivo sospechoso creado: {event.src_path}")
-            move_to_quarantine(event.src_path)
-
-        self.queen.report(self.name, event.src_path, self.signature, self.data)
+        self._process_file(event.src_path)
 
     def on_modified(self, event):
-        if event.is_directory:
+        if event.is_directory or not self._should_process(event.src_path):
             return
-        if not self._should_process(event.src_path):
-            return
-
-        _, ext = os.path.splitext(event.src_path)
-        if ext.lower() in SUSPICIOUS_EXTENSIONS:
-            print(f"[ALERTA] {self.name} detectó archivo sospechoso modificado: {event.src_path}")
-            move_to_quarantine(event.src_path)
-
-        self.queen.report(self.name, event.src_path, self.signature, self.data)
+        self._process_file(event.src_path)
