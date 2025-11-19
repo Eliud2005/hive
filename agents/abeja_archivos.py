@@ -1,81 +1,53 @@
 # agents/abeja_archivos.py
+from watchdog.events import FileSystemEventHandler
 from agents.agent import Agent, move_to_quarantine
-import os, joblib, pefile, time
-import numpy as np
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import dsa
+import os, joblib
 
-KEY_PATH = "data/keys/abeja_archivos_private.pem"
-MODEL_PATH = "data/abeja1_model.pkl"
+SUSPICIOUS_EXTENSIONS = ['.exe', '.bat', '.js', '.vbs', '.scr', '.cmd']
+MODEL_PATH = os.path.abspath("data/abeja2_model.pk1")  # Asegúrate de que tu modelo está aquí
 
-class AbejaArchivos(Agent):
+class AbejaArchivos(Agent, FileSystemEventHandler):
     def __init__(self, queen, signature=None, data=None):
         super().__init__("AbejaArchivos", queen, signature, data)
-        
-        # Cargar modelo IA
-        try:
+
+        # Cargar modelo de IA
+        if os.path.exists(MODEL_PATH):
             self.model = joblib.load(MODEL_PATH)
-            print("[IA] Modelo de AbejaArchivos cargado.")
-        except Exception as e:
-            self.model = None
-            print("[IA] No se encontró modelo, detección básica activada.", e)
-
-        # Cargar clave privada DSA
-        self.private_key = None
-        if os.path.exists(KEY_PATH):
-            with open(KEY_PATH, "rb") as f:
-                key_data = f.read()
-            try:
-                self.private_key = serialization.load_pem_private_key(key_data, password=None)
-                pub_pem = self.private_key.public_key().public_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo
-                )
-                try:
-                    self.queen.register_public_key(self.name, pub_pem)
-                except Exception:
-                    pass
-                print("[DSA] Clave privada cargada y pública registrada en Queen.")
-            except Exception as e:
-                print("[DSA] Error cargando clave privada:", e)
+            print("[IA] Modelo de archivos cargado.")
         else:
-            print("[DSA] No se encontró clave privada:", KEY_PATH)
+            self.model = None
+            print("[IA] No se encontró modelo:", MODEL_PATH)
 
-    def _extract_features(self, filepath):
-        try:
-            pe = pefile.PE(filepath)
-            entropia = np.mean([s.get_entropy() for s in pe.sections])
-            return [os.path.getsize(filepath)/1024, len(pe.sections), entropia]
-        except Exception:
-            try:
-                return [os.path.getsize(filepath)/1024, 0, 0]
-            except:
-                return [0,0,0]
-
-    def _sign(self, message_bytes):
-        if not self.private_key:
-            return None
-        return self.private_key.sign(message_bytes, hashes.SHA256())
-
+    # ---------------- EventHandler de Watchdog ----------------
     def on_created(self, event):
-        if event.is_directory:
-            return
+        if not event.is_directory:
+            self._procesar(event.src_path)
 
-        filepath = event.src_path
+    def on_modified(self, event):
+        if not event.is_directory:
+            self._procesar(event.src_path)
+
+    # ---------------- Procesar archivo ----------------
+    def _procesar(self, filepath):
         _, ext = os.path.splitext(filepath)
-        if ext.lower() not in ['.exe', '.dll', '.scr']:
-            return
+        riesgo = 0
 
-        features = self._extract_features(filepath)
-        riesgo = self.model.predict_proba([features])[0][1] if self.model else 0.8 if features[0]>500 else 0.2
-        print(f"[AbejaArchivos] Riesgo IA: {riesgo:.2f} en {filepath}")
+        if self.model and os.path.isfile(filepath):
+            try:
+                # Extraer características para IA: tamaño, extensión sospechosa
+                mem = os.path.getsize(filepath) / 1024  # KB
+                name_flag = 1 if any(x in filepath.lower() for x in ["malware", "virus", "badfile"]) else 0
+                ext_flag = 1 if ext.lower() in SUSPICIOUS_EXTENSIONS else 0
+                features = [[mem, name_flag, ext_flag]]
+                prob = self.model.predict_proba(features)[0][1]  # Probabilidad de ser malicioso
+                riesgo = round(prob*100, 2)  # porcentaje
+            except Exception as e:
+                print(f"[IA] Error al predecir {filepath}: {e}")
 
-        if riesgo > 0.85:
+        # Si extensión sospechosa o IA dice riesgo >50%, mover a cuarentena
+        if ext.lower() in SUSPICIOUS_EXTENSIONS or riesgo >= 50:
             move_to_quarantine(filepath)
 
-        # Mensaje firmado
-        timestamp = str(int(time.time()))
-        message = f"{filepath}|{timestamp}".encode("utf-8")
-        signature = self._sign(message)
-
-        self.queen.report(self.name, filepath, signature, self.data, signed_message=message)
+        # Guardar el riesgo dentro de data para que Queen lo acepte
+        self.queen.report(self.name, filepath, self.signature, {**self.data, "riesgo": riesgo})
+        print(f"[AbejaArchivos] {filepath} -> Riesgo IA: {riesgo}%")

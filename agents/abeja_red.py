@@ -34,7 +34,7 @@ class AbejaRed(Agent):
         # ---------------- Cargar modelo de IA ----------------
         if os.path.exists(MODEL_PATH):
             self.model = joblib.load(MODEL_PATH)
-            print("[IA] Modelo de red cargado desde abeja3_model.pk1.")
+            print("[IA] Modelo de red cargado desde abeja3_model.pkl.")
         else:
             self.model = None
             print("[IA] No se encontró el modelo:", MODEL_PATH)
@@ -47,13 +47,17 @@ class AbejaRed(Agent):
 
     # ---------------- Extraer características para IA ----------------
     def _extract_features(self, conn):
+        """
+        Solo devuelve las 2 features que espera el modelo:
+        - puerto remoto
+        - estado ESTABLISHED (1 si está conectado, 0 si no)
+        """
         try:
             port = conn.raddr.port if conn.raddr else 0
-            ip_parts = [int(x) for x in conn.raddr.ip.split(".")] if conn.raddr else [0, 0, 0, 0]
             established = 1 if conn.status == "ESTABLISHED" else 0
-            return ip_parts + [port, established]
+            return [port, established]
         except Exception:
-            return [0, 0, 0, 0, 0, 0]
+            return [0, 0]
 
     # ---------------- Escaneo de conexiones ----------------
     def scan_connections(self):
