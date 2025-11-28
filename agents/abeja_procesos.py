@@ -3,8 +3,9 @@ from agents.agent import Agent, move_to_quarantine
 import psutil, time, threading, os, joblib
 from cryptography.hazmat.primitives import hashes, serialization
 
+# ---------------- Rutas ----------------
 KEY_PATH = os.path.abspath("data/keys/abeja_procesos_private.pem")
-MODEL_PATH = os.path.abspath("data/abeja2_model.pk1")
+MODEL_PATH = os.path.abspath("data/abeja2_model.pkl")
 
 
 class AbejaProcesos(Agent):
@@ -33,11 +34,15 @@ class AbejaProcesos(Agent):
 
         # ---------------- Cargar modelo de IA ----------------
         if os.path.exists(MODEL_PATH):
-            self.model = joblib.load(MODEL_PATH)
-            print("[IA] Modelo de procesos cargado desde abeja2_model.pk1.")
+            try:
+                self.model = joblib.load(MODEL_PATH)
+                print(f"[IA] Modelo de procesos cargado desde: {MODEL_PATH}")
+            except Exception as e:
+                self.model = None
+                print(f"[IA] Error al cargar modelo: {e} — se usarán heurísticas simples.")
         else:
             self.model = None
-            print("[IA] No se encontró el modelo:", MODEL_PATH)
+            print(f"[IA] Modelo de procesos no encontrado en: {MODEL_PATH} — se usarán heurísticas simples.")
 
     # ---------------- Firma DSA ----------------
     def _sign(self, message_bytes):
@@ -50,10 +55,10 @@ class AbejaProcesos(Agent):
         try:
             mem_kb = proc.memory_info().rss / 1024
             cpu_percent = proc.cpu_percent(interval=0.1)
-            name_flag = 1 if any(x in proc.name().lower() for x in ["malware", "virus", "badprocess"]) else 0
-            return [mem_kb, cpu_percent, name_flag]
+            # Solo 2 features, coincidiendo con el modelo entrenado
+            return [mem_kb, cpu_percent]
         except (psutil.NoSuchProcess, psutil.AccessDenied):
-            return [0, 0, 0]
+            return [0, 0]
 
     # ---------------- Escaneo de procesos ----------------
     def scan_processes(self):
