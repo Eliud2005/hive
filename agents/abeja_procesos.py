@@ -1,21 +1,25 @@
-# agents/abeja_procesos.py
 from agents.agent import Agent, move_to_quarantine
 import psutil, time, threading, os, joblib
 from cryptography.hazmat.primitives import hashes, serialization
 
-# ---------------- Rutas ----------------
 KEY_PATH = os.path.abspath("data/keys/abeja_procesos_private.pem")
 MODEL_PATH = os.path.abspath("data/abeja2_model.pkl")
 
+# ---------------- Procesos críticos que nunca tocar ni reportar
+TRUSTED_PROCESSES = {
+    "System", "Registry", "csrss.exe", "wininit.exe", "explorer.exe",
+    "svchost.exe", "lsass.exe", "services.exe", "taskhostw.exe",
+    "spoolsv.exe", "antivirus.exe", "System Idle Process"
+}
+TRUSTED_PIDS = {0, 4}  # PID de procesos de sistema que nunca tocar
 
 class AbejaProcesos(Agent):
     CHECK_INTERVAL = 3  # segundos
 
     def __init__(self, queen, signature=None, data=None):
         super().__init__("AbejaProcesos", queen, signature, data)
-
-        # ---------------- Cargar clave privada ----------------
         self.private_key = None
+
         if os.path.exists(KEY_PATH):
             with open(KEY_PATH, "rb") as f:
                 key_data = f.read()
@@ -32,7 +36,6 @@ class AbejaProcesos(Agent):
         else:
             print("[DSA] No se encontró clave privada:", KEY_PATH)
 
-        # ---------------- Cargar modelo de IA ----------------
         if os.path.exists(MODEL_PATH):
             try:
                 self.model = joblib.load(MODEL_PATH)
@@ -44,50 +47,48 @@ class AbejaProcesos(Agent):
             self.model = None
             print(f"[IA] Modelo de procesos no encontrado en: {MODEL_PATH} — se usarán heurísticas simples.")
 
-    # ---------------- Firma DSA ----------------
     def _sign(self, message_bytes):
         if not self.private_key:
             return None
         return self.private_key.sign(message_bytes, hashes.SHA256())
 
-    # ---------------- Extraer características para IA ----------------
     def _extract_features(self, proc):
         try:
             mem_kb = proc.memory_info().rss / 1024
             cpu_percent = proc.cpu_percent(interval=0.1)
-            # Solo 2 features, coincidiendo con el modelo entrenado
             return [mem_kb, cpu_percent]
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return [0, 0]
 
-    # ---------------- Escaneo de procesos ----------------
     def scan_processes(self):
         for proc in psutil.process_iter():
-            features = self._extract_features(proc)
-            sospechoso = False
+            try:
+                # Ignorar procesos críticos por nombre o PID
+                if proc.name() in TRUSTED_PROCESSES or proc.pid in TRUSTED_PIDS:
+                    continue
 
-            # Evaluar con IA si existe el modelo
-            if self.model:
-                try:
-                    pred = self.model.predict([features])[0]
-                    sospechoso = pred == 1
-                except Exception as e:
-                    print(f"[IA] Error al predecir proceso {proc.name()}: {e}")
+                features = self._extract_features(proc)
+                sospechoso = False
 
-            if sospechoso:
-                print(f"[AbejaProcesos] Proceso sospechoso: {proc.name()} (PID {proc.pid})")
-                try:
-                    proc.terminate()
-                    move_to_quarantine(f"Proceso-{proc.pid}")
-                except Exception as e:
-                    print(f"[AbejaProcesos] No se pudo detener proceso: {e}")
+                if self.model:
+                    try:
+                        pred = self.model.predict([features])[0]
+                        sospechoso = pred == 1
+                    except Exception as e:
+                        print(f"[IA] Error al predecir proceso {proc.name()}: {e}")
 
-                timestamp = str(int(time.time()))
-                message = f"{proc.pid}|{proc.name()}|{timestamp}".encode("utf-8")
-                signature = self._sign(message)
-                self.queen.report(self.name, f"Proceso-{proc.pid}", signature, self.data, signed_message=message)
+                if sospechoso:
+                    # Solo alertar, no terminar ni mover
+                    print(f"[AbejaProcesos] Proceso sospechoso (alerta): {proc.name()} (PID {proc.pid})")
 
-    # ---------------- Loop de monitoreo ----------------
+                    timestamp = str(int(time.time()))
+                    message = f"{proc.pid}|{proc.name()}|{timestamp}".encode("utf-8")
+                    signature = self._sign(message)
+                    self.queen.report(self.name, f"Proceso-{proc.pid}", signature, self.data, signed_message=message)
+
+            except Exception:
+                continue
+
     def start(self):
         t = threading.Thread(target=self._loop, daemon=True)
         t.start()

@@ -1,10 +1,28 @@
-# agents/abeja_red.py
 from agents.agent import Agent
 import psutil, time, threading, os, joblib
 from cryptography.hazmat.primitives import hashes, serialization
+import ipaddress
 
 KEY_PATH = "data/keys/abeja_red_private.pem"
 MODEL_PATH = "data/abeja3_model.pkl"  # Modelo de IA para red
+
+# ---------------- IPs seguras (no interrumpir)
+TRUSTED_IPS = {
+    "127.0.0.1",        # loopback
+    "0.0.0.0",          # cualquier
+    "8.8.8.8", "8.8.4.4"  # DNS públicos (ejemplo)
+}
+# Rango local
+LOCAL_NETWORKS = ["192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"]
+
+def is_trusted_ip(ip):
+    if ip in TRUSTED_IPS:
+        return True
+    for net in LOCAL_NETWORKS:
+        if ipaddress.ip_address(ip) in ipaddress.ip_network(net):
+            return True
+    return False
+
 
 class AbejaRed(Agent):
     CHECK_INTERVAL = 5  # segundos
@@ -12,9 +30,9 @@ class AbejaRed(Agent):
     def __init__(self, queen, signature=None, data=None):
         super().__init__("AbejaRed", queen, signature, data)
         self.connections_previas = set()
+        self.private_key = None
 
         # ---------------- Cargar clave privada ----------------
-        self.private_key = None
         if os.path.exists(KEY_PATH):
             with open(KEY_PATH, "rb") as f:
                 key_data = f.read()
@@ -39,19 +57,12 @@ class AbejaRed(Agent):
             self.model = None
             print("[IA] No se encontró el modelo:", MODEL_PATH)
 
-    # ---------------- Firma DSA ----------------
     def _sign(self, message_bytes):
         if not self.private_key:
             return None
         return self.private_key.sign(message_bytes, hashes.SHA256())
 
-    # ---------------- Extraer características para IA ----------------
     def _extract_features(self, conn):
-        """
-        Solo devuelve las 2 features que espera el modelo:
-        - puerto remoto
-        - estado ESTABLISHED (1 si está conectado, 0 si no)
-        """
         try:
             port = conn.raddr.port if conn.raddr else 0
             established = 1 if conn.status == "ESTABLISHED" else 0
@@ -59,12 +70,16 @@ class AbejaRed(Agent):
         except Exception:
             return [0, 0]
 
-    # ---------------- Escaneo de conexiones ----------------
     def scan_connections(self):
         conexiones_actuales = set()
         for conn in psutil.net_connections():
             if conn.status == "ESTABLISHED" and conn.raddr:
                 destino = conn.raddr.ip
+
+                # Filtrar IPs confiables
+                if is_trusted_ip(destino):
+                    continue
+
                 conexiones_actuales.add(destino)
                 nuevo = destino not in self.connections_previas
 
@@ -84,10 +99,8 @@ class AbejaRed(Agent):
                     signature = self._sign(message)
                     self.queen.report_connection(self.name, destino, signature, self.data, signed_message=message)
 
-
         self.connections_previas = conexiones_actuales
 
-    # ---------------- Loop de monitoreo ----------------
     def start(self):
         t = threading.Thread(target=self._loop, daemon=True)
         t.start()
