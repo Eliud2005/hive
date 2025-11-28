@@ -1,29 +1,29 @@
 # queen/queen.py
 """
-Queen: motor central de BeeShield
-Versión: optimizada + extendida (B + C)
+Queen: motor central de BeeShield (versión con verificación de firmas robusta)
 
-Incluye:
-- report() / escaneo_manual() con gui_callback
-- debounce de eventos
-- listeners (event system)
-- whitelist / known hashes / suspicious extensions
-- métricas básicas
-- generar_reporte_pdf -> PDF profesional con ReportLab
-- generate_pdf_report -> wrapper para compatibilidad con interfaz (usa generar_reporte_pdf)
+Mejoras incluidas:
+- verify_agent() tolerante y compatible con DSA, RSA (PSS y PKCS1v15) y ECDSA.
+- acepta firmas como bytes o hex-string; acepta data/signed_message como bytes o hex-string.
+- report_connection() independiente para AbejaRed (network events).
+- report() mantiene debounce para archivos.
+- guardado en TinyDB, listeners, métricas y generación de PDF (como antes).
 """
 
-from tinydb import TinyDB, Query
-from datetime import datetime
-from cryptography.hazmat.primitives.asymmetric import dsa
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.exceptions import InvalidSignature
-import threading
 import os
-import hashlib
+import threading
 import traceback
+import hashlib
+from datetime import datetime
 
-# ReportLab imports para PDF profesional
+from tinydb import TinyDB, Query
+
+# Crypto
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import dsa, rsa, ec, padding
+from cryptography.exceptions import InvalidSignature
+
+# ReportLab (PDF)
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
@@ -36,12 +36,10 @@ DESKTOP_PATH = os.path.join(os.path.expanduser("~"), "Desktop")
 REPORTS_FOLDER = os.path.join(DESKTOP_PATH, "Reportes BeeShield")
 os.makedirs(REPORTS_FOLDER, exist_ok=True)
 
-# Logo path (ajusta si tu logo está en otra carpeta)
-LOGO_PATH = "public/assets/bee7.png"  # o "assets/beeshield_logo.png"
+LOGO_PATH = "public/assets/bee7.png"
+
 
 class Queen:
-    """Motor principal de BeeShield."""
-
     DEBOUNCE_DELAY = 0.3
     DEFAULT_SUSPICIOUS_EXT = {'.exe', '.bat', '.js', '.vbs', '.scr', '.cmd', '.ps1', '.jar'}
 
@@ -50,7 +48,8 @@ class Queen:
         self.hive = TinyDB(db_path)
         self.query = Query()
 
-        # Firmas DSA
+        # Por defecto generamos una clave DSA para la Queen (no es necesaria para agentes,
+        # pero nos permite verificar fallbacks si un agente no registró su clave).
         self.private_key = dsa.generate_private_key(key_size=2048)
         self.public_key = self.private_key.public_key()
 
@@ -61,7 +60,7 @@ class Queen:
         self._lock = threading.RLock()
 
         # Listeners/event system
-        self._listeners = []              # callbacks que reciben (event_dict)
+        self._listeners = []
 
         # Config
         self.whitelist_paths = set()
@@ -137,6 +136,9 @@ class Queen:
         return _TmpAgent(name, signature.hex(), data.hex())
 
     def register_public_key(self, agent_name, public_pem_bytes):
+        """
+        Registra la clave pública del agente. public_pem_bytes debe ser bytes (PEM).
+        """
         try:
             pub = serialization.load_pem_public_key(public_pem_bytes)
             with self._lock:
@@ -147,23 +149,106 @@ class Queen:
             print(f"[QUEEN] Error al registrar clave pública: {e}")
             return False
 
-    def verify_agent(self, name, signature, data):
+    def _normalize_bytes(self, val):
+        """
+        Acepta bytes o hex-string y devuelve bytes.
+        Si es None -> None.
+        """
+        if val is None:
+            return None
+        if isinstance(val, bytes):
+            return val
+        if isinstance(val, str):
+            # si parece hex (solo 0-9a-f y longitud par), intentar decode hex
+            s = val.strip()
+            try:
+                # detect hex: solo 0-9a-fA-F y longitud par
+                hexchars = set('0123456789abcdefABCDEF')
+                if all(c in hexchars for c in s) and (len(s) % 2 == 0):
+                    return bytes.fromhex(s)
+            except Exception:
+                pass
+            # si no es hex: devolver como utf-8
+            return s.encode('utf-8')
+        # fallback: intentar convertir a bytes
         try:
-            sig = bytes.fromhex(signature) if isinstance(signature, str) else signature
-            dat = bytes.fromhex(data) if isinstance(data, str) else data
-        except ValueError:
-            print(f"[QUEEN] Firma inválida (hex).")
+            return bytes(val)
+        except Exception:
+            return None
+
+    def verify_agent(self, name, signature, data):
+        """
+        Verifica la firma 'signature' sobre 'data' usando la clave pública
+        registrada para 'name'. Devuelve True/False.
+        Soporta claves RSA (intentará PSS y PKCS1v15), DSA y ECDSA.
+        Acepta signature/data como bytes o hex-strings.
+        """
+        sig = self._normalize_bytes(signature)
+        dat = self._normalize_bytes(data)
+
+        if sig is None or dat is None:
+            # no hay datos para verificar
             return False
 
-        key = self._public_keys.get(name, self.public_key)
+        key = self._public_keys.get(name, None)
+        if key is None:
+            # fallback: usar la clave pública de Queen (solo si agente no registró)
+            key = self.public_key
+
         try:
-            key.verify(sig, dat, hashes.SHA256())
-            return True
-        except InvalidSignature:
-            print(f"[QUEEN] Firma DSA inválida para '{name}'.")
-            return False
+            # RSA public key
+            if isinstance(key, rsa.RSAPublicKey):
+                # Primero intentar RSA-PSS (preferido)
+                try:
+                    key.verify(
+                        sig,
+                        dat,
+                        padding.PSS(
+                            mgf=padding.MGF1(hashes.SHA256()),
+                            salt_length=padding.PSS.MAX_LENGTH
+                        ),
+                        hashes.SHA256()
+                    )
+                    return True
+                except InvalidSignature:
+                    # Intentar PKCS1v15
+                    try:
+                        key.verify(
+                            sig,
+                            dat,
+                            padding.PKCS1v15(),
+                            hashes.SHA256()
+                        )
+                        return True
+                    except InvalidSignature:
+                        return False
+            # ECDSA public key
+            elif isinstance(key, ec.EllipticCurvePublicKey):
+                try:
+                    key.verify(sig, dat, ec.ECDSA(hashes.SHA256()))
+                    return True
+                except InvalidSignature:
+                    return False
+            # DSA public key (o cualquier que implemente verify with hashes)
+            elif isinstance(key, dsa.DSAPublicKey) or hasattr(key, "verifier") or hasattr(key, "verify"):
+                try:
+                    # DSA verify(signature, data, algorithm)
+                    key.verify(sig, dat, hashes.SHA256())
+                    return True
+                except InvalidSignature:
+                    return False
+            else:
+                # Intenta el método verify genérico y atrapa
+                try:
+                    key.verify(sig, dat, hashes.SHA256())
+                    return True
+                except Exception:
+                    return False
+
         except Exception as e:
-            print(f"[QUEEN] Error verificando firma: {e}")
+            # cualquier otra excepción la interpretamos como verificación fallida,
+            # pero la registramos para depuración.
+            print(f"[QUEEN] Error en verify_agent para '{name}': {e}")
             return False
 
     # ---------------------- Reporte / debounce / GUI callback ----------------------
@@ -224,9 +309,14 @@ class Queen:
                 pass
 
     def report(self, agent, file, signature=None, data=None, signed_message=None, gui_callback=None, severity='low'):
-        """Recibir reporte desde agentes."""
-        if signature and signed_message:
-            if not self.verify_agent(agent, signature, signed_message):
+        """
+        Recibir reporte desde agentes (archivos).
+        signature/signed_message pueden ser bytes o hex-strings; si vienen se verifican.
+        """
+        # Si agente mandó firma + mensaje, verificar.
+        if signature is not None and signed_message is not None:
+            valid = self.verify_agent(agent, signature, signed_message)
+            if not valid:
                 err = f"[ALERTA] Reporte rechazado de '{agent}' — firma inválida."
                 print(err)
                 if gui_callback and callable(gui_callback):
@@ -263,6 +353,68 @@ class Queen:
             timer = threading.Timer(self.DEBOUNCE_DELAY, self._debounced_report, args=[file, gui_callback])
             self._debounce_timers[file] = timer
             timer.start()
+
+        return True
+
+    # ---------------------- Reportes de red (AbejaRed) ----------------------
+    def report_connection(self, agent, ip, signature=None, data=None, signed_message=None, gui_callback=None):
+        """
+        Reportes exclusivos de AbejaRed (conexiones sospechosas).
+        Mantiene verificación igual que report().
+        """
+        # Si agente mandó firma + mensaje, verificar.
+        if signature is not None and signed_message is not None:
+            valid = self.verify_agent(agent, signature, signed_message)
+            if not valid:
+                err = f"[ALERTA] Reporte de conexión rechazado de '{agent}' — firma inválida."
+                print(err)
+                if gui_callback and callable(gui_callback):
+                    try:
+                        gui_callback(err)
+                    except Exception:
+                        print(f"[QUEEN] Error gui_callback (alert): {traceback.format_exc()}")
+                return False
+
+        timestamp = self._now()
+        msg = f"🌐 Conexión sospechosa: {ip}\n   → Reportado por: {agent}\n"
+
+        # Consola
+        print(msg)
+
+        # GUI
+        if gui_callback and callable(gui_callback):
+            try:
+                gui_callback(msg)
+            except Exception:
+                print(f"[QUEEN] Error en gui_callback (conn): {traceback.format_exc()}")
+
+        # Guardar en DB (campo connection para diferenciar)
+        try:
+            self.hive.insert({
+                'agent': agent,
+                'file': None,
+                'connection': ip,
+                'datetime': timestamp,
+                'details': 'network_suspicious'
+            })
+        except Exception:
+            print(f"[QUEEN] Error guardando conexión en DB: {traceback.format_exc()}")
+
+        # Métricas
+        self.metrics['reports_total'] += 1
+        self.metrics['reports_by_agent'][agent] = self.metrics['reports_by_agent'].get(agent, 0) + 1
+
+        # Evento
+        event = {
+            'type': 'connection_detected',
+            'agent': agent,
+            'ip': ip,
+            'timestamp': timestamp
+        }
+        try:
+            threading.Thread(target=self._notify_listeners, args=(event,), daemon=True).start()
+        except Exception:
+            print(f"[QUEEN] Error notificando listeners (conn): {traceback.format_exc()}")
 
         return True
 
@@ -494,10 +646,6 @@ class Queen:
 
     # Wrapper para compatibilidad (interfaz llama generate_pdf_report)
     def generate_pdf_report(self, filename=None, logo_path=None):
-        """
-        Compatibilidad: arma eventos desde la BD y llama al generador profesional.
-        Si filename se pasa, intenta usar ese nombre dentro de REPORTS_FOLDER (sin sobreescribir).
-        """
         # Armar lista de eventos desde la DB
         eventos = []
         for rec in self.hive.all():
@@ -509,7 +657,6 @@ class Queen:
             })
 
         titulo = "Reporte de la Colmena - BeeCode"
-        # Llama al generador profesional
         ruta = self.generar_reporte_pdf(titulo, eventos)
         return ruta
 

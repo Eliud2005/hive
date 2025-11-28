@@ -4,7 +4,7 @@ from agents.agent import Agent, move_to_quarantine
 import os, joblib
 
 SUSPICIOUS_EXTENSIONS = ['.exe', '.bat', '.js', '.vbs', '.scr', '.cmd']
-MODEL_PATH = os.path.abspath("data/abeja2_model.pk1")  # Asegúrate de que tu modelo está aquí
+MODEL_PATH = os.path.abspath("data/abeja2_model.pk1")  # Modelo entrenado
 
 class AbejaArchivos(Agent, FileSystemEventHandler):
     def __init__(self, queen, signature=None, data=None):
@@ -31,7 +31,6 @@ class AbejaArchivos(Agent, FileSystemEventHandler):
     def _procesar(self, filepath):
         _, ext = os.path.splitext(filepath)
         riesgo_ia = 0
-        riesgo_final = 0
 
         # ---------------- IA: Probabilidad real ----------------
         if self.model and os.path.isfile(filepath):
@@ -52,6 +51,19 @@ class AbejaArchivos(Agent, FileSystemEventHandler):
 
         # ---------------- Riesgo final ----------------
         riesgo_final = max(riesgo_ia, riesgo_extension)
+
+        # ===================================================
+        #        🔥 NUEVO: ENVIAR RIESGO A LA INTERFAZ
+        # ===================================================
+        if hasattr(self.queen, "gui_notify_risk"):
+            self.queen.gui_notify_risk(riesgo_final)
+
+        # ===================================================
+        #   🔥 NUEVO: LOG AUTOMÁTICO SI RIESGO ES SIGNIFICATIVO
+        # ===================================================
+        if riesgo_final >= 50:
+            if hasattr(self.queen, "gui_notify"):
+                self.queen.gui_notify(f"⚠ Riesgo IA ({riesgo_final}%) en {filepath}")
 
         # ---------------- Cuarentena ----------------
         if riesgo_final >= 50:

@@ -82,7 +82,8 @@ class AbejaRed(Agent):
                     timestamp = str(int(time.time()))
                     message = f"{destino}|{timestamp}".encode("utf-8")
                     signature = self._sign(message)
-                    self.queen.report(self.name, destino, signature, self.data, signed_message=message)
+                    self.queen.report_connection(self.name, destino, signature, self.data, signed_message=message)
+
 
         self.connections_previas = conexiones_actuales
 
