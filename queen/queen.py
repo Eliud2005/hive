@@ -3,17 +3,14 @@
 Queen: motor central de BeeShield
 Versión: optimizada + extendida (B + C)
 
-Características principales:
-- gui_callback opcional en report() y escaneo_manual() para enviar mensajes directos a la interfaz
-- Event listeners (subscribe) para que otros módulos reciban eventos
-- Soporte de debounce (agrupa reportes cercanos en tiempo)
-- Sistema simple de severidad y métricas (conteo por agente/archivo/tipo)
-- Detección extendida (extensiones sospechosas + whitelist + hash-known database)
-- Manejo robusto de firmas (DSA) y registro de claves públicas
-- Generación de PDF conservando layout previo
-- Buenas prácticas de hilos y bloqueo
-
-NOTA: esta versión asume que la función `move_to_quarantine` la llamas desde fuera (p.ej. en main.py) o que tus agentes la llaman.
+Incluye:
+- report() / escaneo_manual() con gui_callback
+- debounce de eventos
+- listeners (event system)
+- whitelist / known hashes / suspicious extensions
+- métricas básicas
+- generar_reporte_pdf -> PDF profesional con ReportLab
+- generate_pdf_report -> wrapper para compatibilidad con interfaz (usa generar_reporte_pdf)
 """
 
 from tinydb import TinyDB, Query
@@ -21,26 +18,31 @@ from datetime import datetime
 from cryptography.hazmat.primitives.asymmetric import dsa
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.exceptions import InvalidSignature
-from fpdf import FPDF
 import threading
 import os
 import hashlib
 import traceback
 
+# ReportLab imports para PDF profesional
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+# === Rutas para reportes ===
+DESKTOP_PATH = os.path.join(os.path.expanduser("~"), "Desktop")
+REPORTS_FOLDER = os.path.join(DESKTOP_PATH, "Reportes BeeShield")
+os.makedirs(REPORTS_FOLDER, exist_ok=True)
+
+# Logo path (ajusta si tu logo está en otra carpeta)
+LOGO_PATH = "public/assets/bee7.png"  # o "assets/beeshield_logo.png"
 
 class Queen:
-    """Motor principal de BeeShield.
+    """Motor principal de BeeShield."""
 
-    Diseño orientado a producción mínima:
-    - Event-driven (callbacks)
-    - Safe threading
-    - Separación de responsabilidades (Queen no maneja GUI directamente)
-    """
-
-    # Default debounce delay (segundos) para agrupar reportes del mismo archivo
     DEBOUNCE_DELAY = 0.3
-
-    # Lista por defecto de extensiones consideradas sospechosas
     DEFAULT_SUSPICIOUS_EXT = {'.exe', '.bat', '.js', '.vbs', '.scr', '.cmd', '.ps1', '.jar'}
 
     def __init__(self, db_path='hive.json'):
@@ -48,11 +50,11 @@ class Queen:
         self.hive = TinyDB(db_path)
         self.query = Query()
 
-        # DSA keys
+        # Firmas DSA
         self.private_key = dsa.generate_private_key(key_size=2048)
         self.public_key = self.private_key.public_key()
 
-        # Buffers y estructuras internas
+        # Estructuras internas
         self.reports_buffer = {}          # archivo -> set(agentes)
         self._debounce_timers = {}        # archivo -> threading.Timer
         self._public_keys = {}            # agent_name -> public key object
@@ -61,12 +63,12 @@ class Queen:
         # Listeners/event system
         self._listeners = []              # callbacks que reciben (event_dict)
 
-        # Config/whitelist/known hashes
+        # Config
         self.whitelist_paths = set()
         self.suspicious_ext = set(self.DEFAULT_SUSPICIOUS_EXT)
-        self.known_malware_hashes = set()  # almacenar hashes SHA256 conocidos
+        self.known_malware_hashes = set()
 
-        # Metrics
+        # Métricas
         self.metrics = {
             'reports_total': 0,
             'reports_by_agent': {},
@@ -74,7 +76,7 @@ class Queen:
             'last_scan_duration': None,
         }
 
-    # ---------------------- Utilidades internas ----------------------
+    # ---------------------- Utilidades ----------------------
     def _now(self):
         return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -89,17 +91,14 @@ class Queen:
             return None
 
     def _notify_listeners(self, event):
-        """Enviar evento a todos los listeners registrados (no bloqueante)."""
         listeners = list(self._listeners)
         for cb in listeners:
             try:
                 cb(event)
             except Exception:
-                # No debe romper el motor si un listener falla
                 print(f"[QUEEN] Error en listener: {traceback.format_exc()}")
 
     def add_listener(self, callback):
-        """Registrar un callback que reciba eventos: callback(event_dict)"""
         if callable(callback):
             self._listeners.append(callback)
             return True
@@ -112,7 +111,7 @@ class Queen:
         except ValueError:
             return False
 
-    # ---------------------- Firmas y agentes ----------------------
+    # ---------------------- Firmas / agentes ----------------------
     def _generate_signature(self, agent_name):
         data = f"{agent_name}-{datetime.now().timestamp()}".encode()
         signature = self.private_key.sign(data, hashes.SHA256())
@@ -167,9 +166,9 @@ class Queen:
             print(f"[QUEEN] Error verificando firma: {e}")
             return False
 
-    # ---------------------- Reporte con debounce y GUI callback ----------------------
+    # ---------------------- Reporte / debounce / GUI callback ----------------------
     def _debounced_report(self, file, gui_callback=None):
-        """Se ejecuta tras debounce; guarda en BD y notifica GUI/listeners."""
+        """Se ejecuta tras debounce; guarda en DB y notifica GUI/listeners."""
         with self._lock:
             agents_list = list(self.reports_buffer.get(file, []))
             agents = ', '.join(sorted(agents_list))
@@ -178,18 +177,22 @@ class Queen:
             # Consola
             print(msg)
 
-            # GUI (si se pasa)
+            # GUI
             if gui_callback and callable(gui_callback):
                 try:
                     gui_callback(msg)
                 except Exception:
                     print(f"[QUEEN] Error en gui_callback: {traceback.format_exc()}")
 
-            # Registrar en DB
+            # Guardar en DB
             timestamp = self._now()
             for ag in agents_list:
-                if not self.hive.contains((self.query.agent == ag) & (self.query.file == file)):
-                    self.hive.insert({'agent': ag, 'file': file, 'datetime': timestamp})
+                try:
+                    if not self.hive.contains((self.query.agent == ag) & (self.query.file == file)):
+                        self.hive.insert({'agent': ag, 'file': file, 'datetime': timestamp})
+                except Exception:
+                    # tinydb exceptions pueden ocurrir si schema cambia; evitamos romper
+                    print(f"[QUEEN] Error insertando en DB: {traceback.format_exc()}")
 
             # Actualizar métricas
             num_reports = len(agents_list)
@@ -215,19 +218,13 @@ class Queen:
                 del self._debounce_timers[file]
             except KeyError:
                 pass
-            self.reports_buffer[file].clear()
+            try:
+                self.reports_buffer[file].clear()
+            except Exception:
+                pass
 
     def report(self, agent, file, signature=None, data=None, signed_message=None, gui_callback=None, severity='low'):
-        """Recibir reporte desde agentes.
-
-        Parámetros:
-        - agent: str (nombre agente)
-        - file: str (ruta)
-        - signature/data/signed_message: para verificación opcional
-        - gui_callback: función que recibe strings para la GUI
-        - severity: 'low'|'medium'|'high' (no obligatorio)
-        """
-        # Validaciones básicas
+        """Recibir reporte desde agentes."""
         if signature and signed_message:
             if not self.verify_agent(agent, signature, signed_message):
                 err = f"[ALERTA] Reporte rechazado de '{agent}' — firma inválida."
@@ -242,15 +239,13 @@ class Queen:
         if not file:
             return False
 
-        # Opcional: ignorar rutas en whitelist
+        # Ignorar rutas en whitelist (si aplica)
         try:
             if self.whitelist_paths:
-                # commonpath puede fallar si las rutas no son absolutas; usamos abspath
                 file_abs = os.path.abspath(file)
                 if any(os.path.commonpath([file_abs, w]) == w for w in self.whitelist_paths):
                     return True
         except Exception:
-            # Si hay problema con commonpath, no bloqueamos el reporte
             pass
 
         with self._lock:
@@ -258,7 +253,7 @@ class Queen:
                 self.reports_buffer[file] = set()
             self.reports_buffer[file].add(agent)
 
-            # Reiniciar debounce timer y pasar gui_callback
+            # Reiniciar timer
             if file in self._debounce_timers:
                 try:
                     self._debounce_timers[file].cancel()
@@ -271,14 +266,9 @@ class Queen:
 
         return True
 
-    # ---------------------- Escaneo manual (motor) ----------------------
+    # ---------------------- Escaneo manual ----------------------
     def escaneo_manual(self, ruta='tests/files', gui_callback=None, move_to_quarantine_cb=None, scan_rules=None):
-        """Escaneo manual que puede ser lanzado por la UI.
-
-        - gui_callback(message) muestra mensajes en la GUI
-        - move_to_quarantine_cb(path) es callback opcional para mover archivos
-        - scan_rules: dict con reglas adicionales (p.ej. {'extensions': set([...])})
-        """
+        """Escaneo manual que puede ser lanzado por la UI."""
         start_ts = datetime.now()
         try:
             if not os.path.exists(ruta):
@@ -291,7 +281,7 @@ class Queen:
                         print(f"[QUEEN] Error gui_callback (ruta): {traceback.format_exc()}")
                 return
 
-            # Merge rules
+            # Reglas de extensiones
             rules_ext = set(self.suspicious_ext)
             if scan_rules and 'extensions' in scan_rules:
                 rules_ext.update(scan_rules['extensions'])
@@ -326,25 +316,20 @@ class Queen:
                     detected = False
                     reason = []
 
-                    # 1) Extensión sospechosa
                     if ext in rules_ext:
                         detected = True
                         reason.append('suspicious_extension')
 
-                    # 2) Hash conocido
                     h = self._sha256_file(filepath)
                     if h and h in self.known_malware_hashes:
                         detected = True
                         reason.append('known_hash')
 
-                    # 3) Tamaño/exceso de cambios (puedes añadir heurística aquí)
-
                     if detected:
                         temp_agent = 'EscaneoManual'
-                        # Reportar (envía gui_callback hacia _debounced_report vía timer)
                         self.report(temp_agent, filepath, gui_callback=gui_callback)
 
-                        # Intentar mover a cuarentena si se proporcionó callback
+                        # Mover a cuarentena si se proporcionó callback
                         if move_to_quarantine_cb and callable(move_to_quarantine_cb):
                             try:
                                 move_to_quarantine_cb(filepath)
@@ -360,7 +345,6 @@ class Queen:
                                     except Exception:
                                         print(f"[QUEEN] Error gui_callback (cuarentena-exc): {traceback.format_exc()}")
 
-                        # Notificar detalles
                         detalle = f"[DETECTADO] {filepath} -> {', '.join(reason)}"
                         print(detalle)
                         if gui_callback and callable(gui_callback):
@@ -383,45 +367,153 @@ class Queen:
                 except Exception:
                     print(f"[QUEEN] Error gui_callback (fin): {traceback.format_exc()}")
 
-    # ---------------------- PDF report (mejorado) ----------------------
-    def generate_pdf_report(self, filename='Hive_Report.pdf', logo_path='public/assets/bee7.png'):
-        filename_abs = os.path.abspath(filename)
-        pdf = FPDF()
-        pdf.add_page()
+    # ---------------------- PDF profesional (ReportLab) ----------------------
+    def generar_reporte_pdf(self, titulo_reporte: str, eventos: list):
+        """
+        Genera un PDF profesional y lo guarda en REPORTS_FOLDER con nombre ordenable:
+        BeeShield_Report_YYYY-MM-DD_HH-MM-SS.pdf
+        eventos: lista de dicts con keys: datetime, agent, file, details
+        """
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"BeeShield_Report_{timestamp}.pdf"
+        filepath = os.path.join(REPORTS_FOLDER, filename)
 
-        if logo_path and os.path.exists(logo_path):
+        styles = getSampleStyleSheet()
+        style_title = styles["Title"]
+        style_normal = styles["BodyText"]
+
+        style_summary = ParagraphStyle(
+            'Summary',
+            parent=styles['Heading2'],
+            spaceAfter=14,
+            textColor=colors.HexColor("#333333")
+        )
+
+        style_table_header = ParagraphStyle(
+            'TableHeader',
+            parent=styles['Heading4'],
+            textColor=colors.white,
+            alignment=1,
+        )
+
+        doc = SimpleDocTemplate(
+            filepath,
+            pagesize=letter,
+            rightMargin=40,
+            leftMargin=40,
+            topMargin=60,
+            bottomMargin=40
+        )
+
+        story = []
+
+        # Portada
+        if os.path.exists(LOGO_PATH):
             try:
-                pdf.image(logo_path, x=10, y=8, w=30)
+                img = Image(LOGO_PATH, width=120, height=120)
+                img.hAlign = "CENTER"
+                story.append(img)
+                story.append(Spacer(1, 18))
             except Exception:
                 pass
 
-        pdf.set_font('Helvetica', 'B', 16)
-        pdf.cell(0, 15, 'Reporte de la Colmena - BeeCode', ln=True, align='C')
-        pdf.ln(8)
+        story.append(Paragraph(f"<b>{titulo_reporte}</b>", style_title))
+        story.append(Spacer(1, 12))
 
-        # Cabecera
-        pdf.set_font('Helvetica', 'B', 11)
-        pdf.cell(70, 8, 'Archivo', border=1, align='C', fill=True)
-        pdf.cell(60, 8, 'Agentes', border=1, align='C', fill=True)
-        pdf.cell(50, 8, 'Fecha y hora', border=1, align='C', fill=True)
-        pdf.ln()
+        fecha_actual = datetime.now().strftime("%d/%m/%Y - %H:%M:%S")
+        story.append(Paragraph(f"Generado: {fecha_actual}", style_normal))
+        story.append(Spacer(1, 18))
 
-        pdf.set_font('Helvetica', '', 10)
+        story.append(Paragraph("<b>Resumen Ejecutivo</b>", style_summary))
+        story.append(Spacer(1, 6))
 
-        # Usamos la DB para listar eventos recientes
+        total_eventos = len(eventos)
+        story.append(Paragraph(
+            f"Este reporte contiene <b>{total_eventos}</b> eventos registrados por BeeShield.",
+            style_normal
+        ))
+        story.append(Spacer(1, 12))
+        story.append(PageBreak())
+
+        # Tabla de eventos
+        story.append(Paragraph("<b>Eventos Detectados</b>", styles["Heading2"]))
+        story.append(Spacer(1, 12))
+
+        data = [
+            [
+                Paragraph("<b>Fecha/Hora</b>", style_table_header),
+                Paragraph("<b>Agente</b>", style_table_header),
+                Paragraph("<b>Archivo</b>", style_table_header),
+                Paragraph("<b>Detalles</b>", style_table_header)
+            ]
+        ]
+
+        for e in eventos:
+            data.append([
+                e.get("datetime", ""),
+                e.get("agent", ""),
+                e.get("file", ""),
+                e.get("details", "—")
+            ])
+
+        tabla = Table(data, colWidths=[110, 100, 170, 150])
+        tabla.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E88E5")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+
+            ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#888888")),
+
+            ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#F5F5F5")),
+        ]))
+
+        story.append(tabla)
+        story.append(Spacer(1, 18))
+
+        # Footer callback
+        def footer(canvas, doc):
+            canvas.saveState()
+            canvas.setFont("Helvetica", 8)
+            canvas.setFillColor(colors.HexColor("#555555"))
+            canvas.drawString(40, 25, "BeeShield Antivirus — Reporte generado automáticamente")
+            canvas.drawRightString(letter[0] - 40, 25, f"Página {doc.page}")
+            canvas.restoreState()
+
+        # Build
+        try:
+            doc.build(story, onFirstPage=footer, onLaterPages=footer)
+            print(f"[BeeShield] Reporte profesional generado: {filepath}")
+            return filepath
+        except Exception:
+            print(f"[QUEEN] Error generando PDF profesional: {traceback.format_exc()}")
+            return None
+
+    # Wrapper para compatibilidad (interfaz llama generate_pdf_report)
+    def generate_pdf_report(self, filename=None, logo_path=None):
+        """
+        Compatibilidad: arma eventos desde la BD y llama al generador profesional.
+        Si filename se pasa, intenta usar ese nombre dentro de REPORTS_FOLDER (sin sobreescribir).
+        """
+        # Armar lista de eventos desde la DB
+        eventos = []
         for rec in self.hive.all():
-            file = rec.get('file', '')
-            agent = rec.get('agent', '')
-            dt = rec.get('datetime', '')
-            pdf.cell(70, 8, str(file)[:60], border=1)
-            pdf.cell(60, 8, str(agent)[:40], border=1)
-            pdf.cell(50, 8, str(dt)[:30], border=1)
-            pdf.ln()
+            eventos.append({
+                'datetime': rec.get('datetime', ''),
+                'agent': rec.get('agent', ''),
+                'file': rec.get('file', ''),
+                'details': rec.get('details', '')
+            })
 
-        pdf.output(filename_abs)
-        print(f"[QUEEN] PDF generado: {filename_abs}")
+        titulo = "Reporte de la Colmena - BeeCode"
+        # Llama al generador profesional
+        ruta = self.generar_reporte_pdf(titulo, eventos)
+        return ruta
 
-    # ---------------------- Helpers para administración ----------------------
+    # ---------------------- Helpers ----------------------
     def add_to_whitelist(self, path):
         self.whitelist_paths.add(os.path.abspath(path))
 
@@ -439,6 +531,5 @@ class Queen:
 
     def get_metrics(self):
         return dict(self.metrics)
-
 
 # Fin de queen/queen.py
