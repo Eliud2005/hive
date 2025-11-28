@@ -30,24 +30,39 @@ class AbejaArchivos(Agent, FileSystemEventHandler):
     # ---------------- Procesar archivo ----------------
     def _procesar(self, filepath):
         _, ext = os.path.splitext(filepath)
-        riesgo = 0
+        riesgo_ia = 0
+        riesgo_final = 0
 
+        # ---------------- IA: Probabilidad real ----------------
         if self.model and os.path.isfile(filepath):
             try:
-                # Extraer características para IA: tamaño, extensión sospechosa
                 mem = os.path.getsize(filepath) / 1024  # KB
                 name_flag = 1 if any(x in filepath.lower() for x in ["malware", "virus", "badfile"]) else 0
                 ext_flag = 1 if ext.lower() in SUSPICIOUS_EXTENSIONS else 0
+
                 features = [[mem, name_flag, ext_flag]]
-                prob = self.model.predict_proba(features)[0][1]  # Probabilidad de ser malicioso
-                riesgo = round(prob*100, 2)  # porcentaje
+                prob = self.model.predict_proba(features)[0][1]
+                riesgo_ia = round(prob * 100, 2)
+
             except Exception as e:
                 print(f"[IA] Error al predecir {filepath}: {e}")
 
-        # Si extensión sospechosa o IA dice riesgo >50%, mover a cuarentena
-        if ext.lower() in SUSPICIOUS_EXTENSIONS or riesgo >= 50:
+        # ---------------- Riesgo base por extensión ----------------
+        riesgo_extension = 60 if ext.lower() in SUSPICIOUS_EXTENSIONS else 0
+
+        # ---------------- Riesgo final ----------------
+        riesgo_final = max(riesgo_ia, riesgo_extension)
+
+        # ---------------- Cuarentena ----------------
+        if riesgo_final >= 50:
             move_to_quarantine(filepath)
 
-        # Guardar el riesgo dentro de data para que Queen lo acepte
-        self.queen.report(self.name, filepath, self.signature, {**self.data, "riesgo": riesgo})
-        print(f"[AbejaArchivos] {filepath} -> Riesgo IA: {riesgo}%")
+        # ---------------- Reporte a Queen ----------------
+        self.queen.report(
+            self.name,
+            filepath,
+            self.signature,
+            {**self.data, "riesgo": riesgo_final}
+        )
+
+        print(f"[AbejaArchivos] {filepath} -> Riesgo {riesgo_final}%")

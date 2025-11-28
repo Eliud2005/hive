@@ -9,6 +9,7 @@ from datetime import datetime
 from PIL import Image, ImageTk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from utils.notifications import notify
 import os
 
 # ================================
@@ -20,15 +21,15 @@ ACCENT = "#00FFC6"
 TEXT = "#EAEAEA"
 
 # Paleta más suave / agradable para la gráfica
-PLOT_BG = "#0F1724"      # Figura exterior (ligeramente azulado)
-PLOT_FACE = "#0B1220"    # Fondo dentro del eje (oscuro pero suave)
-PLOT_TEXT = "#E6EEF6"    # Texto en la gráfica (suave, alto contraste)
+PLOT_BG = "#0F1724"
+PLOT_FACE = "#0B1220"
+PLOT_TEXT = "#E6EEF6"
 PLOT_COLORS = [
-    "#5BD1FF",  # agua
-    "#A0E7B8",  # verde suave
-    "#FFD27F",  # amarillo cálido
-    "#FF9AA2",  # rosado suave
-    "#C7B7FF",  # lila suave
+    "#5BD1FF",
+    "#A0E7B8",
+    "#FFD27F",
+    "#FF9AA2",
+    "#C7B7FF",
 ]
 
 # ================================
@@ -109,15 +110,16 @@ def generar_pdf():
         messagebox.showerror("Error PDF", str(e))
         agregar_log(f"[ERROR] PDF: {e}")
 
+# Escaneo manual corregido — ahora sí pasa gui_callback
+ttk.Button(
+    btn_frame,
+    text="Escaneo Manual",
+    command=lambda: queen.escaneo_manual(gui_callback=agregar_log)
+).grid(row=0, column=3, padx=10)
+
 ttk.Button(btn_frame, text="Activar", command=activar).grid(row=0, column=0, padx=10)
 ttk.Button(btn_frame, text="Desactivar", command=desactivar).grid(row=0, column=1, padx=10)
 ttk.Button(btn_frame, text="Reporte PDF", command=generar_pdf).grid(row=0, column=2, padx=10)
-ttk.Button(btn_frame, text="Escaneo Manual", command=lambda: queen.escaneo_manual()).grid(row=0, column=3, padx=10)
-
-# ================================
-#   FILTROS / VISIBILIDAD DE AGENTES
-# ================================
-# NOTE: Removed checkboxes — abeja1/2/3 are excluded permanently from the chart.
 
 # ================================
 #             LOGS
@@ -146,11 +148,9 @@ ax = fig.add_subplot(111)
 ax.set_facecolor(PLOT_FACE)
 ax.set_title("Eventos por Agente", color=PLOT_TEXT)
 ax.tick_params(colors=PLOT_TEXT)
-# estilizar ejes para que sigan la paleta suave
+
 for spine in ax.spines.values():
     spine.set_color("#243142")
-ax.xaxis.label.set_color(PLOT_TEXT)
-ax.yaxis.label.set_color(PLOT_TEXT)
 
 canvas = FigureCanvasTkAgg(fig, master=graph_frame)
 canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -163,30 +163,26 @@ def actualizar_grafica():
         agentes[ag] = agentes.get(ag, 0) + 1
 
     ax.clear()
-    # mantener el fondo y estilo después de limpiar
     ax.set_facecolor(PLOT_FACE)
 
-    # Respect visibility toggles: skip abeja1/2/3 if user turned them off
-    # Exclude the agent names abeja1/abeja2/abeja3 permanently
     excluded_agents = {"abeja1", "abeja2", "abeja3", "abeja4"}
     filtered = {k: v for k, v in agentes.items() if k.lower() not in excluded_agents}
 
     if not filtered:
-        # If nothing to show, give a friendly empty-state message
         ax.text(0.5, 0.5, "No hay agentes seleccionados",
                 horizontalalignment='center', verticalalignment='center',
                 color="#7E98A7", fontsize=12, transform=ax.transAxes)
     else:
-        # usar paleta suave, rotando colores si hay más barras que colores
         colors = [PLOT_COLORS[i % len(PLOT_COLORS)] for i in range(len(filtered))]
         ax.bar(list(filtered.keys()), list(filtered.values()), color=colors, edgecolor="#13202A")
 
     ax.set_title("Eventos por Agente", color=PLOT_TEXT)
     ax.tick_params(colors=PLOT_TEXT)
+
     for spine in ax.spines.values():
         spine.set_color("#243142")
-    canvas.draw()
 
+    canvas.draw()
     window.after(1200, actualizar_grafica)
 
 # ================================
@@ -214,7 +210,14 @@ def actualizar_logs():
 def run_interface(q, escaneo_manual_func):
     global queen
     queen = q
-    queen.escaneo_manual = escaneo_manual_func
+    
+    # Para que Queen pueda mandar mensajes a GUI
+    queen.gui_notify = agregar_log
+
+    # NO reemplazar queen.escaneo_manual
+    # Solo se usa escaneo_manual_func para integrarlo con la GUI
+    def manual_scan_wrapper():
+        escaneo_manual_func(gui_callback=agregar_log)
 
     actualizar_logs()
     actualizar_grafica()

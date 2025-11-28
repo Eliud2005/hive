@@ -38,14 +38,41 @@ observer_thread = threading.Thread(target=observer.start, daemon=True)
 observer_thread.start()
 
 # ---------------- Escaneo manual (para el botón en GUI) ----------------
-def escaneo_manual():
+def escaneo_manual(gui_callback=None):
     temp_agent = queen.create_agent("EscaneoManual")
+
+    if gui_callback:
+        gui_callback("Inicio de escaneo manual...")
+
     for filepath in glob.glob(f"{TEST_FOLDER}/**", recursive=True):
         if os.path.isfile(filepath):
             _, ext = os.path.splitext(filepath)
+
+            # mover archivos sospechosos
             if ext.lower() in SUSPICIOUS_EXTENSIONS:
                 move_to_quarantine(filepath)
-            queen.report("EscaneoManual", filepath, temp_agent.signature, temp_agent.data)
+                msg = f"Archivo movido a cuarentena: {filepath}"
+                print(msg)
+                if gui_callback:
+                    gui_callback(msg)
+
+            # reportar al hive
+            queen.report(
+                "EscaneoManual",
+                filepath,
+                signature=temp_agent.signature,
+                data=temp_agent.data
+            )
+
+            msg = f"[EscaneoManual] Analizado: {filepath}"
+            print(msg)
+            if gui_callback:
+                gui_callback(msg)
+
+    fin = "Escaneo manual completado."
+    print(fin)
+    if gui_callback:
+        gui_callback(fin)
 
 # ---------------- Ejecutar interfaz ----------------
 try:
