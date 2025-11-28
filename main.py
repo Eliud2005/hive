@@ -1,40 +1,82 @@
+# main.py
+import os
+import glob
+import threading
 from watchdog.observers import Observer
-from agents.agent import Agent
 from queen.queen import Queen
-import time
-from rich.console import Console
-from rich.table import Table
+from agents.agent import move_to_quarantine
+from agents.abeja_archivos import AbejaArchivos
+from agents.abeja_procesos import AbejaProcesos
+from agents.abeja_red import AbejaRed
+from interface import run_interface
 
-def mostrar_miel(db):
-    console = Console()
-    table = Table(title="Miel de la Colmena")
-    table.add_column("Agente")
-    table.add_column("Archivo detectado")
-    for item in db.all():
-        table.add_row(item['agent'], item['file'])
-    console.print(table)
+# ---------------- Carpetas necesarias ----------------
+TEST_FOLDER = "tests/files"
+QUARANTINE_FOLDER = "quarantine"
+os.makedirs(TEST_FOLDER, exist_ok=True)
+os.makedirs(QUARANTINE_FOLDER, exist_ok=True)
 
+# ---------------- Extensiones sospechosas ----------------
+SUSPICIOUS_EXTENSIONS = ['.exe', '.bat', '.js', '.vbs', '.scr', '.cmd']
+
+# ---------------- Inicialización de Queen ----------------
 queen = Queen()
-agent1 = Agent("Abeja1", queen)
-agent2 = Agent("Abeja2", queen)
 
+# ---------------- Crear agentes ----------------
+agent1 = AbejaArchivos(queen, signature="sig1", data={})
+agent2 = AbejaProcesos(queen)
+agent3 = AbejaRed(queen)
+
+# ---------------- Iniciar loops internos de agentes ----------------
+agent2.start()  # Procesos
+agent3.start()  # Red
+
+# ---------------- Observer para AbejaArchivos ----------------
 observer = Observer()
-observer.schedule(agent1, path="tests/files", recursive=True)
-observer.schedule(agent2, path="tests/files", recursive=True)
-observer.start()
+observer.schedule(agent1, path=TEST_FOLDER, recursive=True)
+observer_thread = threading.Thread(target=observer.start, daemon=True)
+observer_thread.start()
 
-last_count = 0  # Guarda el número de registros previos
+# ---------------- Escaneo manual (para el botón en GUI) ----------------
+def escaneo_manual(gui_callback=None):
+    temp_agent = queen.create_agent("EscaneoManual")
 
-# Mostrar la tabla una vez al inicio
-mostrar_miel(queen.hive)
+    if gui_callback:
+        gui_callback("Inicio de escaneo manual...")
 
+    for filepath in glob.glob(f"{TEST_FOLDER}/**", recursive=True):
+        if os.path.isfile(filepath):
+            _, ext = os.path.splitext(filepath)
+
+            # mover archivos sospechosos
+            if ext.lower() in SUSPICIOUS_EXTENSIONS:
+                move_to_quarantine(filepath)
+                msg = f"Archivo movido a cuarentena: {filepath}"
+                print(msg)
+                if gui_callback:
+                    gui_callback(msg)
+
+            # reportar al hive
+            queen.report(
+                "EscaneoManual",
+                filepath,
+                signature=temp_agent.signature,
+                data=temp_agent.data
+            )
+
+            msg = f"[EscaneoManual] Analizado: {filepath}"
+            print(msg)
+            if gui_callback:
+                gui_callback(msg)
+
+    fin = "Escaneo manual completado."
+    print(fin)
+    if gui_callback:
+        gui_callback(fin)
+
+# ---------------- Ejecutar interfaz ----------------
 try:
-    while True:
-        time.sleep(1)  # Checa cada segundo
-        current_count = len(queen.hive)
-        if current_count != last_count:
-            mostrar_miel(queen.hive)
-            last_count = current_count
-except KeyboardInterrupt:
+    run_interface(queen, escaneo_manual)
+finally:
     observer.stop()
-observer.join()
+    observer.join()
